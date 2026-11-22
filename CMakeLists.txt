@@ -33,3 +33,5 @@ add_test(NAME mouz_check_example COMMAND mouz check ${CMAKE_CURRENT_SOURCE_DIR}/
 add_test(NAME mouz_expression_arithmetic COMMAND mouz eval "(12 + 8) * 3")
 add_test(NAME mouz_expression_boolean COMMAND mouz eval "(9 >= 9) && true")
 add_test(NAME mouz_expression_string COMMAND mouz eval "\"Hello, \" + \"Mouz\"")
+
+add_test(NAME mouz_state_example COMMAND mouz check ${CMAKE_CURRENT_SOURCE_DIR}/examples/state-values.mozf)
