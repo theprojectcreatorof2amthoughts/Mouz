@@ -1,0 +1,10 @@
+/build/
+/out/
+*.mozc
+*.obj
+*.o
+*.dll
+*.exe
+*.pdb
+.vs/
+.vscode/

@@ -1,0 +1,6 @@
+# Mouz expression examples (evaluated with: mouz eval "<expression>")
+# Arithmetic: (12 + 8) * 3
+# Text join: "Hello, " + "Mouz"
+# Boolean: (9 >= 9) && true
+# Unary: !(4 > 7)
+# Remainder: 17 % 5

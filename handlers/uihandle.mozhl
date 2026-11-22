@@ -1,0 +1,5 @@
+# Mouz UI handler: uihandle.mozhl
+# Initial handler manifest. Handler directives and platform bindings
+# will be specified from concrete .mozf examples.
+handler Mouz.UI
+version 1

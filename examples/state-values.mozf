@@ -1,0 +1,8 @@
+value greeting := "Hello, Mouz!"
+state clicks := 2
+change clicks := clicks + 1
++mozUihandler |handlers/uihandle.mozhl|
++#makeUicomp [<|
+    uiStructuredef:= .NET
+    uiStat:= clicks * 10
+    doComp |+*WinComp|
