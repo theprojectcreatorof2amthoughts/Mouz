@@ -25,7 +25,7 @@ The C++20 compiler performs lexical line processing, parsing, validation, expres
 
 ## Platform boundaries
 
-Mouz is an independent language project. The Windows backend is intended to expose native Windows UI capabilities to Mouz programs. C, C++, and C# can implement compiler/runtime/platform infrastructure; application UI logic is authored in `.mozf`, not generated C# source.
+Mouz is an independent language project. The Windows backend is a native C++ Win32 host. Mouz does not generate or require C# application code; replacing C# for Windows UI implementation is the purpose of the Mouz Windows backend. C and C++ implement compiler/runtime/platform infrastructure.
 
 The Browser backend continues to use JavaScript as its browser execution layer. Mouz does not replace JavaScript.
 
