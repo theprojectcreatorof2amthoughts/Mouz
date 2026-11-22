@@ -1,12 +1,28 @@
-# Mouz expressions
+# Mouz expressions and values
 
-Mouz has a constant-expression evaluator exposed through `mouz eval`. The same evaluator is used when parsing `uiStat:=` in `.mozf` programs.
+Mouz has a constant-expression evaluator exposed through `mouz eval`. The same evaluator is used in `.mozf` declarations and `uiStat:=`.
+
+## Values and state
+
+```mozf
+value greeting := "Hello, Mouz!"
+state clicks := 2
+change clicks := clicks + 1
+```
+
+- `value` declares an immutable value.
+- `state` declares a mutable value.
+- `change` updates a previously declared `state`.
+- Declarations are evaluated in source order, so expressions can refer to earlier declarations.
+- A `change` cannot target an immutable value, an unknown name, or change the variable's value type.
+
+The first implementation infers each value's type from its initializer: number, text, or Boolean.
 
 ## Operators
 
 | Precedence (high → low) | Operators | Meaning |
 |---|---|---|
-| Primary | literals, `( )` | Values and grouping |
+| Primary | literals, identifiers, `( )` | Values, references, grouping |
 | Unary | `!`, `-`, `+` | Logical NOT and numeric sign |
 | Multiplicative | `*`, `/`, `%` | Multiply, divide, remainder |
 | Additive | `+`, `-` | Arithmetic; `+` concatenates if either operand is text |
@@ -26,14 +42,17 @@ mouz eval "!(4 > 7)"           # true
 mouz eval "17 % 5"             # 2
 ```
 
-The same grammar is available in `uiStat`:
+The same grammar is available in `.mozf` programs:
 
 ```mozf
+value multiplier := 10
+state clicks := 2
+change clicks := clicks + 1
 +mozUihandler |handlers/uihandle.mozhl|
 +#makeUicomp [<|
     uiStructuredef:= .NET
-    uiStat:= (2 + 3) * 4
+    uiStat:= clicks * multiplier
     doComp |+*WinComp|
 ```
 
-`uiStat` must evaluate to a whole number within the C++ `int` range. Variables, function calls, and reactive state references are future semantic work, not silently treated as supported today.
+`uiStat` must evaluate to a whole number within the C++ `int` range. User-defined functions, scoped blocks, and runtime reactive bindings remain future semantic work.
