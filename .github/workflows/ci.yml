@@ -24,6 +24,11 @@ jobs:
           ./build/mouz check examples/expression-state.mozf
           ./build/mouz build examples/expression-state.mozf -o build/expression-state.mozc
           ./build/mouzi build/expression-state.mozc
+      - name: Compile and interpret value/state example
+        run: |
+          ./build/mouz check examples/state-values.mozf
+          ./build/mouz build examples/state-values.mozf -o build/state-values.mozc
+          ./build/mouzi build/state-values.mozc
   windows-host:
     runs-on: windows-latest
     steps:
