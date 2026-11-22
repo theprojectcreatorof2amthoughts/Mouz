@@ -18,6 +18,12 @@ target_link_libraries(mouz PRIVATE mouz_core)
 add_executable(mouzi interpreter/main.cpp)
 target_link_libraries(mouzi PRIVATE mouz_runtime)
 
+if(WIN32)
+  add_library(mouz_windows platform/windows/mouz_window_host.cpp)
+  target_include_directories(mouz_windows PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/platform/windows)
+  target_link_libraries(mouz_windows PUBLIC user32 gdi32)
+endif()
+
 if(MSVC)
   target_compile_options(mouz_core PRIVATE /W4 /permissive-)
   target_compile_options(mouz PRIVATE /W4 /permissive-)
