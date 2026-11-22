@@ -1,20 +1,23 @@
 # Mouz grammar draft
 
-The grammar below specifies the currently accepted bootstrap form. `WS` means optional horizontal whitespace. Handler paths are delimited by vertical bars.
+The accepted bootstrap grammar currently consists of optional value/state declarations followed by the UI handler and component block. `WS` means optional horizontal whitespace.
 
 ```ebnf
-program          = handler, component_block ;
+program          = { value_decl | state_decl | change_stmt }, handler, component_block ;
+value_decl       = "value", WS, identifier, WS, ":=", WS, expression ;
+state_decl       = "state", WS, identifier, WS, ":=", WS, expression ;
+change_stmt      = "change", WS, identifier, WS, ":=", WS, expression ;
 handler          = "+mozUihandler", WS, "|", path, "|" ;
 component_block  = "+#makeUicomp", WS, "[<|", newline,
                    structure, newline,
-                   state, newline,
+                   state_status, newline,
                    { component, newline } ;
 structure        = "uiStructuredef:=", WS, identifier ;
-state            = "uiStat:=", WS, integer_expression ;
+state_status     = "uiStat:=", WS, expression ;
 component        = "doComp", WS, "|", component_reference, "|" ;
 ```
 
-The expression grammar for `uiStat` and `mouz eval` is:
+## Expression grammar
 
 ```ebnf
 expression = logical_or ;
@@ -25,7 +28,9 @@ comparison = additive, { ("<" | "<=" | ">" | ">="), additive } ;
 additive = multiplicative, { ("+" | "-"), multiplicative } ;
 multiplicative = unary, { ("*" | "/" | "%"), unary } ;
 unary = ["!" | "-" | "+"], primary ;
-primary = number | string | "true" | "false" | "(", expression, ")" ;
+primary = number | string | "true" | "false" | identifier | "(", expression, ")" ;
 ```
 
-The parser rejects unknown directives, duplicate singleton declarations, malformed expressions, and component declarations that appear before the component block. The component block closing delimiter and richer nested UI grammar remain to be specified from the author's examples.
+Declarations are evaluated in source order. `value` is immutable; `state` is mutable; `change` updates an existing mutable name and preserves its value type. `uiStat` must evaluate to an integer in range. The current bootstrap parser rejects unknown directives, duplicate names, malformed expressions, and component declarations before the component block.
+
+The component block closing delimiter, nested UI grammar, function syntax, and event syntax remain to be specified from the language author's examples.
