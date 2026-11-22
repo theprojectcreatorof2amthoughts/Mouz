@@ -1,11 +1,9 @@
 name: CI
-
 on:
   push:
     branches: [main, "feat/**"]
   pull_request:
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,11 +15,15 @@ jobs:
         run: cmake --build build --parallel 2
       - name: Test
         run: ctest --test-dir build --output-on-failure
-      - name: Compile and interpret example
+      - name: Compile and interpret baseline example
         run: |
           ./build/mouz build examples/first.mozf -o build/first.mozc
           ./build/mouzi build/first.mozc
-
+      - name: Compile and interpret expression example
+        run: |
+          ./build/mouz check examples/expression-state.mozf
+          ./build/mouz build examples/expression-state.mozf -o build/expression-state.mozc
+          ./build/mouzi build/expression-state.mozc
   windows-host:
     runs-on: windows-latest
     steps:
