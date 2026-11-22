@@ -15,7 +15,7 @@ WindowHost::WindowHost(std::wstring title, int width, int height) {
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = &WindowHost::window_proc;
     wc.hInstance = instance;
-    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.lpszClassName = window_class_name;
     RegisterClassExW(&wc);
