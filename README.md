@@ -1,6 +1,6 @@
 # Mouz 
 
-Mouz (موز) is an independent UI programming language. Its name comes from the Arabic word for bananas. It has its own source format, compiler, interpreter, runtime, and UI-handler format; it is not a Shay subproject.
+Mouz (موز) is an independent UI programming language. Its name comes from the Arabic word for bananas. It has its own source format, compiler, interpreter, runtime, and UI-handler format; it is for use to replace the old C# UI system that was used previously by Shay.
 
 ## File types
 - `.mozf` — Mouz source programs.
