@@ -1,9 +1,11 @@
 name: CI
+
 on:
   push:
     branches: [main, "feat/**"]
   pull_request:
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,3 +21,14 @@ jobs:
         run: |
           ./build/mouz build examples/first.mozf -o build/first.mozc
           ./build/mouzi build/first.mozc
+
+  windows-host:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build Mouz Windows host
+        run: dotnet build platform/windows/Mouz.Windows.csproj --configuration Release
