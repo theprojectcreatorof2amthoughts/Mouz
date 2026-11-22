@@ -8,7 +8,7 @@
 #include <vector>
 namespace mouz {
 namespace {
-enum class Kind { Number, String, True, False, Operator, Left, Right, End };
+enum class Kind { Number, String, Identifier, True, False, Operator, Left, Right, End };
 struct Token { Kind kind; std::string text; };
 std::vector<Token> tokenize(const std::string& s) {
   std::vector<Token> out;
@@ -39,7 +39,7 @@ std::vector<Token> tokenize(const std::string& s) {
       auto word=s.substr(start,i-start);
       if(word=="true") out.push_back({Kind::True,word});
       else if(word=="false") out.push_back({Kind::False,word});
-      else throw std::runtime_error("unknown identifier '" + word + "' in constant expression");
+      else out.push_back({Kind::Identifier,word});
       continue;
     }
     if(s[i]=='(') { out.push_back({Kind::Left,"("}); ++i; continue; }
@@ -67,7 +67,7 @@ double number(const Value& v) {
   throw std::runtime_error("numeric operator requires numbers");
 }
 class Parser {
-  std::vector<Token> t; std::size_t p=0;
+  std::vector<Token> t; const Environment& environment; std::size_t p=0;
   const Token& peek() const { return t[p]; }
   Token take() { return t[p++]; }
   bool accept(const std::string& op) { if(peek().kind==Kind::Operator && peek().text==op) { ++p; return true; } return false; }
@@ -79,6 +79,7 @@ class Parser {
       return v;
     }
     if(x.kind==Kind::String) return x.text;
+    if(x.kind==Kind::Identifier) { auto found=environment.find(x.text); if(found==environment.end()) throw std::runtime_error("unknown identifier '" + x.text + "'"); return found->second; }
     if(x.kind==Kind::True) return true;
     if(x.kind==Kind::False) return false;
     if(x.kind==Kind::Left) { auto v=logical_or(); if(take().kind!=Kind::Right) throw std::runtime_error("expected ')'"); return v; }
@@ -96,12 +97,12 @@ class Parser {
   Value logical_and() { auto v=equality(); while(accept("&&")) { auto b=equality(); v=truth(v)&&truth(b); } return v; }
   Value logical_or() { auto v=logical_and(); while(accept("||")) { auto b=logical_and(); v=truth(v)||truth(b); } return v; }
 public:
-  explicit Parser(const std::string& s):t(tokenize(s)){}
+  explicit Parser(const std::string& s, const Environment& env):t(tokenize(s)),environment(env){}
   Value run() { auto v=logical_or(); if(peek().kind!=Kind::End) throw std::runtime_error("unexpected token '" + peek().text + "'"); return v; }
 };
 }
-ExpressionResult evaluate_expression(const std::string& source) {
-  try { return {Parser(source).run(),{}}; }
+ExpressionResult evaluate_expression(const std::string& source, const Environment& environment) {
+  try { return {Parser(source,environment).run(),{}}; }
   catch(const std::exception& e) { return {0.0,e.what()}; }
 }
 std::string value_to_string(const Value& value) {
