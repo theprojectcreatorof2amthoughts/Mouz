@@ -1,0 +1,6 @@
++mozUihandler |uihandle.mozhl|
++#makeUicomp [<|
+    uiStructuredef:= .NET
+    uiStat:=1
+
+    doComp |+*WinComp|
