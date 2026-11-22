@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Mouz VERSION 0.1.0 LANGUAGES C CXX)
+project(Mouz VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_library(mouz_core src/lexer.cpp src/parser.cpp)
+add_library(mouz_core src/lexer.cpp src/parser.cpp src/expression.cpp)
 target_include_directories(mouz_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_library(mouz_runtime runtime/src/runtime.c)
@@ -30,3 +30,6 @@ endif()
 
 enable_testing()
 add_test(NAME mouz_check_example COMMAND mouz check ${CMAKE_CURRENT_SOURCE_DIR}/examples/first.mozf)
+add_test(NAME mouz_expression_arithmetic COMMAND mouz eval "(12 + 8) * 3")
+add_test(NAME mouz_expression_boolean COMMAND mouz eval "(9 >= 9) && true")
+add_test(NAME mouz_expression_string COMMAND mouz eval "\"Hello, \" + \"Mouz\"")
