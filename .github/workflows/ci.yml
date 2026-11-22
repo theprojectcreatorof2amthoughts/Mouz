@@ -29,13 +29,11 @@ jobs:
           ./build/mouz check examples/state-values.mozf
           ./build/mouz build examples/state-values.mozf -o build/state-values.mozc
           ./build/mouzi build/state-values.mozc
-  windows-host:
+  windows-native:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
-      - name: Build Mouz Windows host
-        run: dotnet build platform/windows/Mouz.Windows.csproj --configuration Release
+      - name: Configure native Windows build
+        run: cmake -S . -B build -A x64
+      - name: Build compiler, interpreter, runtime, and Win32 UI backend
+        run: cmake --build build --config Release --parallel 2
