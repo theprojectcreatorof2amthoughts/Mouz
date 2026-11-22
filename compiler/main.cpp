@@ -32,6 +32,9 @@ bool emit(const std::string& path, const mouz::Program& program) {
            << "state=" << program.ui_state << '\n';
     for (const auto& component : program.components)
         output << "component=" << component.reference << '\n';
+    for (const auto& variable : program.variables)
+        output << "variable=" << variable.name << '|' << (variable.mutable_state ? "state" : "value")
+               << '|' << variable.value.index() << '|' << mouz::value_to_string(variable.value) << '\n';
     return static_cast<bool>(output);
 }
 }
