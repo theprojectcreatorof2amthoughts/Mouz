@@ -41,9 +41,9 @@ cmake --build build --config Release
 ```
 
 ## Platform direction
-- Windows: Mouz is the UI programming language. C# is allowed as Windows backend implementation infrastructure, not as generated application code.
+- Windows: Mouz is the UI programming language, backed by a native C++/Win32 host. Mouz does not generate or require C# application code.
 - Browser: JavaScript remains the browser execution layer. Mouz does not replace JavaScript.
-- C, C++, and C# are implementation technologies, not the language users write UI applications in.
+- C and C++ implement the compiler/runtime/platform infrastructure; C# is the Windows UI language Mouz is intended to replace.
 
 ## Status
 Early experimental language foundation. Expressions and basic value/state declarations are implemented. The `.mozc` format remains a bootstrap container; functions, scoped control flow, event execution, full `.mozhl` semantics, and native Windows rendering integration remain future milestones.
