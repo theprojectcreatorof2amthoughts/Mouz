@@ -1,5 +1,8 @@
-# Mouz Windows backend
+# Mouz native Windows backend
 
-This project is the initial Windows host infrastructure for Mouz. Mouz source files (`.mozf`) remain the application/UI language; this C# assembly is an implementation detail of the Windows backend, not generated application source.
+The Windows UI backend is implemented in C++ against the Win32 API. It provides a native window host and primitives for adding text labels and buttons with callbacks.
 
-The first host exposes a minimal window, text label, and button API. The next integration milestone is connecting compiler/interpreter component and event instructions to this host. The `.NET` structure selection in the initial language example is preserved as user-provided syntax; its final semantics will be defined in the language specification.
+- `mouz_window_host.hpp` — native host interface.
+- `mouz_window_host.cpp` — Win32 window, message loop, child controls, and button dispatch.
+
+This backend is built only on Windows by CMake. It does not generate or require C# application code. Mouz source (`.mozf`) remains the language used to declare UI applications. The next integration step is to have the Mouz interpreter instantiate these native controls from compiled component instructions.
