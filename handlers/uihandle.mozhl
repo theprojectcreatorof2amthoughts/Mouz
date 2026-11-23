@@ -1,5 +1,2056 @@
-# Mouz UI handler: uihandle.mozhl
-# Initial handler manifest. Handler directives and platform bindings
-# will be specified from concrete .mozf examples.
-handler Mouz.UI
-version 1
+# Mouz UI Handler Core
+# File: uihandle.mozhl
+# Version: 0.1.0-draft
+#
+# This file is the first executable-contract draft for Mouz's UI handler.
+# It is intentionally independent of Shay, SHUI, gshai, and shaii.
+# JavaScript remains the browser execution layer; this handler does not replace it.
+# Windows-native controls are intended to be provided by the Mouz native runtime.
+#
+# Syntax note: the repository has not yet frozen the .mozhl grammar. The declarations
+# below establish the proposed handler vocabulary and its runtime contract. The parser
+# must reject unknown directives rather than silently ignoring them.
+
++mozUihandler |uihandle.mozhl|
++mozHandlerVersion := "0.1.0-draft"
++mozHandlerName := "Mouz.UI.Core"
++mozHandlerKind := UI
++mozHandlerABI := 1
++mozHandlerEntry := UiHandler.Initialize
++mozHandlerShutdown := UiHandler.Shutdown
++mozHandlerThread := UI
++mozHandlerErrors := Strict
++mozHandlerOwnership := Explicit
++mozHandlerNullPolicy := Reject
++mozHandlerLayoutPolicy := MeasureThenArrange
++mozHandlerRenderPolicy := RetainedTree
++mozHandlerEventPolicy := CaptureTargetBubble
++mozHandlerStatePolicy := Transactional
+
++#makeUicomp [<|
+    uiStructuredef:= .NET
+    uiStat:=1
+    doComp |+*WinComp|
+|>]
+
+# -----------------------------------------------------------------------------
+# 01. Public contract and lifecycle
+# -----------------------------------------------------------------------------
++mozNamespace |Mouz.UI|
++mozImport |Mouz.Core.Types|
++mozImport |Mouz.Core.Diagnostics|
++mozImport |Mouz.Runtime.Dispatch|
+
++mozEnum UiHandlerState
+    Created
+    Initializing
+    Ready
+    ShuttingDown
+    Stopped
+    Faulted
++mozEnd
+
++mozEnum UiNodeState
+    Detached
+    Attaching
+    Attached
+    Updating
+    Detaching
+    Disposed
+    Faulted
++mozEnd
+
++mozEnum UiResult
+    Ok
+    InvalidArgument
+    InvalidState
+    NotFound
+    AlreadyExists
+    Unsupported
+    LayoutFailed
+    RenderFailed
+    EventRejected
+    ResourceMissing
+    OutOfMemory
+    InternalError
++mozEnd
+
++mozRecord UiHandlerOptions
+    backend: UiBackendKind = Auto
+    strictMode: Bool = true
+    enableAccessibility: Bool = true
+    enableDiagnostics: Bool = true
+    frameRateLimit: UInt32 = 120
+    logicalDpi: Float = 96.0
+    resourceRoot: Path = "."
+    themeName: Text = "system"
++mozEnd
+
++mozInterface IUiHandler
+    Initialize(options: UiHandlerOptions) -> UiResult
+    Shutdown() -> UiResult
+    GetState() -> UiHandlerState
+    GetCapabilities() -> UiCapabilities
+    CreateWindow(spec: WindowSpec) -> UiWindow
+    DestroyWindow(window: UiWindow) -> UiResult
+    PumpEvents(timeoutMs: UInt32) -> UiResult
+    Flush() -> UiResult
++mozEnd
+
++mozService UiHandler implements IUiHandler
+    state := Created
+    options := UiHandlerOptions.Default
+    windows := UiWindowRegistry.Create()
+    dispatcher := UiDispatcher.Create()
+    resources := UiResourceStore.Create()
+    themes := UiThemeManager.Create()
+    diagnostics := UiDiagnostics.Create()
+    accessibility := UiAccessibility.Create()
+
+    +mozFunction Initialize(options: UiHandlerOptions) -> UiResult
+        require state == Created
+        validate options
+        state := Initializing
+        select backend options.backend
+        initialize dispatcher
+        initialize resource store
+        initialize theme manager
+        initialize accessibility when options.enableAccessibility
+        initialize diagnostics when options.enableDiagnostics
+        state := Ready
+        return Ok
+    +mozEnd
+
+    +mozFunction Shutdown() -> UiResult
+        require state == Ready or state == Faulted
+        state := ShuttingDown
+        close all registered windows
+        dispose all root visual trees
+        release theme resources
+        release resource store
+        stop dispatcher
+        state := Stopped
+        return Ok
+    +mozEnd
+
+    +mozFunction GetState() -> UiHandlerState
+        return state
+    +mozEnd
+
+    +mozFunction Flush() -> UiResult
+        require state == Ready
+        dispatcher.Drain()
+        for each window in windows
+            window.CommitPendingChanges()
+            window.LayoutIfDirty()
+            window.RenderIfDirty()
+        end
+        return Ok
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 02. Backends and platform capability negotiation
+# -----------------------------------------------------------------------------
++mozEnum UiBackendKind
+    Auto
+    WindowsNative
+    Browser
+    Headless
++mozEnd
+
++mozRecord UiCapabilities
+    backend: UiBackendKind
+    supportsNativeWindows: Bool
+    supportsBrowserDom: Bool
+    supportsPointerInput: Bool
+    supportsTouchInput: Bool
+    supportsKeyboardInput: Bool
+    supportsClipboard: Bool
+    supportsIme: Bool
+    supportsAccessibility: Bool
+    supportsGpuComposition: Bool
+    supportsNativeDialogs: Bool
+    maxTextureSize: UInt32
++mozEnd
+
++mozInterface IUiBackend
+    Probe() -> UiCapabilities
+    Start(options: UiHandlerOptions) -> UiResult
+    Stop() -> UiResult
+    CreateNativeWindow(spec: WindowSpec) -> NativeWindowHandle
+    DestroyNativeWindow(handle: NativeWindowHandle) -> UiResult
+    SubmitFrame(window: NativeWindowHandle, frame: UiFrame) -> UiResult
+    SetCursor(cursor: UiCursorKind) -> UiResult
+    SetClipboardText(value: Text) -> UiResult
+    GetClipboardText() -> Text
++mozEnd
+
++mozService BackendSelector
+    +mozFunction Select(kind: UiBackendKind) -> IUiBackend
+        if kind == Auto
+            if Platform.IsWindows() then return WindowsBackend.Create()
+            if Platform.IsBrowser() then return BrowserBackend.Create()
+            return HeadlessBackend.Create()
+        end
+        if kind == WindowsNative then return WindowsBackend.Create()
+        if kind == Browser then return BrowserBackend.Create()
+        if kind == Headless then return HeadlessBackend.Create()
+        fail UnsupportedBackend
+    +mozEnd
++mozEnd
+
++mozService WindowsBackend implements IUiBackend
+    nativeApi := Win32
+    windowClass := "Mouz.UI.Window"
+    +mozFunction Probe() -> UiCapabilities
+        return capabilities(nativeWindows=true, browserDom=false, pointer=true,
+            touch=true, keyboard=true, clipboard=true, ime=true, accessibility=true,
+            gpu=true, nativeDialogs=true)
+    +mozEnd
+    +mozFunction Start(options: UiHandlerOptions) -> UiResult
+        register window class windowClass
+        initialize message queue
+        initialize composition device when available
+        return Ok
+    +mozEnd
+    +mozFunction Stop() -> UiResult
+        release composition device
+        unregister window class when unused
+        return Ok
+    +mozEnd
+    +mozFunction CreateNativeWindow(spec: WindowSpec) -> NativeWindowHandle
+        return Win32.CreateWindow(spec.title, spec.bounds, spec.style, spec.owner)
+    +mozEnd
+    +mozFunction SubmitFrame(window: NativeWindowHandle, frame: UiFrame) -> UiResult
+        return Win32.Compositor.Present(window, frame)
+    +mozEnd
++mozEnd
+
++mozService BrowserBackend implements IUiBackend
+    executionLayer := JavaScript
+    domRoot := Document.CreateRoot()
+    +mozFunction Probe() -> UiCapabilities
+        return capabilities(nativeWindows=false, browserDom=true, pointer=true,
+            touch=true, keyboard=true, clipboard=BrowserClipboard.Available(),
+            ime=true, accessibility=true, gpu=true, nativeDialogs=false)
+    +mozEnd
+    +mozFunction Start(options: UiHandlerOptions) -> UiResult
+        attach domRoot to document.body
+        install browser event bridge
+        install resize observer
+        return Ok
+    +mozEnd
+    +mozFunction Stop() -> UiResult
+        remove browser event bridge
+        detach domRoot
+        return Ok
+    +mozEnd
+    +mozFunction SubmitFrame(window: NativeWindowHandle, frame: UiFrame) -> UiResult
+        JavaScript.MouzDomBridge.Apply(window, frame)
+        return Ok
+    +mozEnd
++mozEnd
+
++mozService HeadlessBackend implements IUiBackend
+    +mozFunction Probe() -> UiCapabilities
+        return capabilities(nativeWindows=false, browserDom=false, pointer=false,
+            touch=false, keyboard=false, clipboard=false, ime=false,
+            accessibility=false, gpu=false, nativeDialogs=false)
+    +mozEnd
+    +mozFunction Start(options: UiHandlerOptions) -> UiResult
+        create deterministic test surface
+        return Ok
+    +mozEnd
+    +mozFunction Stop() -> UiResult
+        destroy deterministic test surface
+        return Ok
+    +mozEnd
+    +mozFunction SubmitFrame(window: NativeWindowHandle, frame: UiFrame) -> UiResult
+        TestSurface.Record(window, frame)
+        return Ok
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 03. Core values, geometry, and measurement
+# -----------------------------------------------------------------------------
++mozRecord UiPoint
+    x: Float
+    y: Float
++mozEnd
++mozRecord UiSize
+    width: Float
+    height: Float
++mozEnd
++mozRecord UiRect
+    x: Float
+    y: Float
+    width: Float
+    height: Float
++mozEnd
++mozRecord UiThickness
+    left: Float = 0
+    top: Float = 0
+    right: Float = 0
+    bottom: Float = 0
++mozEnd
++mozRecord UiCornerRadius
+    topLeft: Float = 0
+    topRight: Float = 0
+    bottomRight: Float = 0
+    bottomLeft: Float = 0
++mozEnd
++mozRecord UiConstraints
+    minWidth: Float = 0
+    minHeight: Float = 0
+    maxWidth: Float = Infinity
+    maxHeight: Float = Infinity
++mozEnd
++mozEnum UiUnit
+    Pixel
+    Dip
+    Percent
+    Auto
+    Star
++mozEnd
++mozRecord UiLength
+    value: Float
+    unit: UiUnit
++mozEnd
+
++mozFunction RectContains(rect: UiRect, point: UiPoint) -> Bool
+    return point.x >= rect.x and point.y >= rect.y
+        and point.x <= rect.x + rect.width
+        and point.y <= rect.y + rect.height
++mozEnd
+
++mozFunction RectIntersect(a: UiRect, b: UiRect) -> UiRect
+    left := max(a.x, b.x)
+    top := max(a.y, b.y)
+    right := min(a.x + a.width, b.x + b.width)
+    bottom := min(a.y + a.height, b.y + b.height)
+    if right < left or bottom < top then return UiRect.Empty
+    return UiRect(left, top, right - left, bottom - top)
++mozEnd
+
++mozFunction ResolveLength(length: UiLength, available: Float, dpi: Float) -> Float
+    match length.unit
+        Pixel: return length.value
+        Dip: return length.value * dpi / 96.0
+        Percent: return available * length.value / 100.0
+        Auto: return NaN
+        Star: return NaN
+    end
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 04. Visual tree and component model
+# -----------------------------------------------------------------------------
++mozEnum UiVisibility
+    Visible
+    Hidden
+    Collapsed
++mozEnd
++mozEnum UiOrientation
+    Horizontal
+    Vertical
++mozEnd
++mozEnum UiOverflow
+    Visible
+    Clip
+    Scroll
+    Auto
++mozEnd
++mozEnum UiHorizontalAlignment
+    Start
+    Center
+    End
+    Stretch
++mozEnd
++mozEnum UiVerticalAlignment
+    Top
+    Center
+    Bottom
+    Stretch
++mozEnd
+
++mozRecord UiComponentSpec
+    id: Text
+    type: Text
+    name: Text = ""
+    key: Text = ""
+    enabled: Bool = true
+    visible: UiVisibility = Visible
+    width: UiLength = Auto
+    height: UiLength = Auto
+    minSize: UiSize = UiSize.Zero
+    maxSize: UiSize = UiSize.Infinite
+    margin: UiThickness = UiThickness.Zero
+    padding: UiThickness = UiThickness.Zero
+    horizontalAlignment: UiHorizontalAlignment = Stretch
+    verticalAlignment: UiVerticalAlignment = Stretch
+    style: UiStyleRef = None
+    accessibility: UiAccessibilitySpec = Default
++mozEnd
+
++mozInterface IUiNode
+    GetId() -> Text
+    GetTypeName() -> Text
+    GetParent() -> IUiNode
+    GetChildren() -> UiNodeList
+    AddChild(child: IUiNode) -> UiResult
+    RemoveChild(child: IUiNode) -> UiResult
+    FindById(id: Text) -> IUiNode
+    SetProperty(name: Text, value: UiValue) -> UiResult
+    GetProperty(name: Text) -> UiValue
+    Invalidate(flags: UiInvalidation) -> UiResult
+    Dispose() -> UiResult
++mozEnd
+
++mozService UiNode implements IUiNode
+    id: Text
+    typeName: Text
+    parent: IUiNode = null
+    children: UiNodeList = UiNodeList.Empty
+    properties: UiPropertyBag = UiPropertyBag.Create()
+    state: UiNodeState = Detached
+    invalidation: UiInvalidation = None
+    +mozFunction AddChild(child: IUiNode) -> UiResult
+        require state != Disposed
+        require child != null
+        require child.GetParent() == null
+        require not child.IsAncestorOf(this)
+        children.Append(child)
+        child.SetParent(this)
+        child.AttachToTreeWhenAttached()
+        Invalidate(Measure | Arrange | Render | Accessibility)
+        return Ok
+    +mozEnd
+    +mozFunction RemoveChild(child: IUiNode) -> UiResult
+        if not children.Contains(child) then return NotFound
+        child.DetachFromTree()
+        children.Remove(child)
+        child.SetParent(null)
+        Invalidate(Measure | Arrange | Render | Accessibility)
+        return Ok
+    +mozEnd
+    +mozFunction FindById(target: Text) -> IUiNode
+        if id == target then return this
+        for each child in children
+            found := child.FindById(target)
+            if found != null then return found
+        end
+        return null
+    +mozEnd
+    +mozFunction Dispose() -> UiResult
+        if state == Disposed then return Ok
+        state := Detaching
+        for each child in children snapshot
+            child.Dispose()
+        end
+        children.Clear()
+        properties.Clear()
+        state := Disposed
+        return Ok
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 05. Component registration and factories
+# -----------------------------------------------------------------------------
++mozInterface IUiComponentFactory
+    GetComponentName() -> Text
+    Create(spec: UiComponentSpec) -> IUiNode
+    Validate(spec: UiComponentSpec) -> UiValidationResult
++mozEnd
+
++mozService UiComponentRegistry
+    factories := Map<Text, IUiComponentFactory>.Create()
+    +mozFunction Register(factory: IUiComponentFactory) -> UiResult
+        require factory != null
+        name := factory.GetComponentName()
+        if factories.Contains(name) then return AlreadyExists
+        factories.Add(name, factory)
+        return Ok
+    +mozEnd
+    +mozFunction Create(spec: UiComponentSpec) -> IUiNode
+        factory := factories.GetOrNull(spec.type)
+        if factory == null then fail UnknownComponent(spec.type)
+        result := factory.Validate(spec)
+        if not result.IsValid then fail InvalidComponent(result)
+        return factory.Create(spec)
+    +mozEnd
+    +mozFunction Contains(name: Text) -> Bool
+        return factories.Contains(name)
+    +mozEnd
+    +mozFunction Names() -> TextList
+        return factories.Keys().SortOrdinal()
+    +mozEnd
++mozEnd
+
+# Built-in component declarations. Factories own validation, defaults, and lifecycle.
++mozBuiltin Button : UiControl
+    properties := [text, command, commandParameter, isDefault, isCancel,
+        icon, iconPlacement, clickMode, repeatDelay, repeatInterval]
+    events := [click, pressed, released, commandFailed]
+    behaviors := [focusable, keyboardActivate, pointerCapture, accessibleButton]
++mozEnd
++mozBuiltin TextBlock : UiElement
+    properties := [text, fontFamily, fontSize, fontWeight, fontStyle,
+        foreground, textAlignment, wrapping, trimming, lineHeight, selectable]
+    events := [linkClick]
+    behaviors := [textMeasure, textRender, accessibleText]
++mozEnd
++mozBuiltin TextInput : UiControl
+    properties := [text, placeholder, maxLength, readOnly, password,
+        multiline, acceptReturn, inputType, selectionStart, selectionLength]
+    events := [textChanged, submitted, selectionChanged, validationFailed]
+    behaviors := [focusable, keyboardInput, ime, clipboard, accessibleTextField]
++mozEnd
++mozBuiltin Image : UiElement
+    properties := [source, fit, alignment, decodeMode, altText, pixelated]
+    events := [loaded, failed]
+    behaviors := [resourceDecode, imageMeasure, imageRender, accessibleImage]
++mozEnd
++mozBuiltin Panel : UiContainer
+    properties := [orientation, spacing, horizontalAlignment, verticalAlignment,
+        wrap, overflow, clipToBounds]
+    events := []
+    behaviors := [childLayout, hitTestChildren]
++mozEnd
++mozBuiltin Stack : Panel
+    properties := [orientation, spacing, itemAlignment]
+    behaviors := [linearMeasure, linearArrange]
++mozEnd
++mozBuiltin Grid : UiContainer
+    properties := [rows, columns, rowGap, columnGap, cellSpacing]
+    events := []
+    behaviors := [gridMeasure, gridArrange]
++mozEnd
++mozBuiltin ScrollView : UiContainer
+    properties := [horizontalScroll, verticalScroll, scrollOffset,
+        contentExtent, viewportExtent, overscrollMode]
+    events := [scroll, scrollStarted, scrollEnded]
+    behaviors := [wheelInput, touchPan, inertia, scrollbarRender]
++mozEnd
++mozBuiltin CheckBox : UiControl
+    properties := [isChecked, isThreeState, label, checkAlignment]
+    events := [checkedChanged]
+    behaviors := [keyboardActivate, accessibleCheckBox]
++mozEnd
++mozBuiltin RadioButton : UiControl
+    properties := [groupName, isSelected, label]
+    events := [selectionChanged]
+    behaviors := [exclusiveSelection, accessibleRadio]
++mozEnd
++mozBuiltin Slider : UiControl
+    properties := [minimum, maximum, value, step, orientation, tickFrequency]
+    events := [valueChanged, dragStarted, dragCompleted]
+    behaviors := [pointerDrag, keyboardAdjust, accessibleSlider]
++mozEnd
++mozBuiltin ProgressBar : UiElement
+    properties := [minimum, maximum, value, isIndeterminate, orientation]
+    events := [valueChanged]
+    behaviors := [progressRender, accessibleProgress]
++mozEnd
++mozBuiltin Border : UiContainer
+    properties := [borderBrush, borderThickness, cornerRadius, background, padding]
+    events := []
+    behaviors := [singleChildLayout, roundedClip]
++mozEnd
++mozBuiltin Separator : UiElement
+    properties := [orientation, thickness, brush]
+    events := []
+    behaviors := [separatorMeasure, separatorRender]
++mozEnd
++mozBuiltin ListView : UiContainer
+    properties := [itemsSource, selectedItem, selectedIndex, itemTemplate,
+        selectionMode, virtualization, itemSpacing]
+    events := [selectionChanged, itemInvoked]
+    behaviors := [itemRealization, listNavigation, accessibleList]
++mozEnd
++mozBuiltin Window : UiRoot
+    properties := [title, bounds, minimumSize, maximumSize, resizable,
+        startupLocation, windowState, topmost, background, icon]
+    events := [created, closing, closed, activated, deactivated, resized, moved]
+    behaviors := [nativeWindow, focusScope, rootLayout, renderSurface]
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 06. Property system, bindings, and validation
+# -----------------------------------------------------------------------------
++mozEnum UiPropertyKind
+    Boolean
+    Integer
+    Number
+    Text
+    Color
+    Brush
+    Length
+    Size
+    Point
+    Thickness
+    Enum
+    Resource
+    Object
++mozEnd
+
++mozRecord UiPropertyDescriptor
+    name: Text
+    kind: UiPropertyKind
+    defaultValue: UiValue
+    readOnly: Bool = false
+    nullable: Bool = false
+    affectsMeasure: Bool = false
+    affectsArrange: Bool = false
+    affectsRender: Bool = false
+    affectsAccessibility: Bool = false
+    validator: UiValueValidator = None
++mozEnd
+
++mozRecord UiValidationIssue
+    propertyName: Text
+    code: Text
+    message: Text
+    severity: DiagnosticSeverity
++mozEnd
++mozRecord UiValidationResult
+    isValid: Bool
+    issues: UiValidationIssueList
++mozEnd
+
++mozInterface IUiValueBinding
+    Read() -> UiValue
+    Write(value: UiValue) -> UiResult
+    Subscribe(callback: UiBindingCallback) -> UiSubscription
+    Unsubscribe(subscription: UiSubscription) -> UiResult
++mozEnd
+
++mozService UiPropertyEngine
+    +mozFunction Set(node: IUiNode, name: Text, value: UiValue) -> UiResult
+        descriptor := node.GetPropertyDescriptor(name)
+        if descriptor == null then return NotFound
+        if descriptor.readOnly then return InvalidState
+        validation := descriptor.validator.Validate(value)
+        if not validation.isValid then return InvalidArgument
+        oldValue := node.GetProperty(name)
+        if oldValue.Equals(value) then return Ok
+        node.StoreProperty(name, value)
+        flags := None
+        if descriptor.affectsMeasure then flags := flags | Measure
+        if descriptor.affectsArrange then flags := flags | Arrange
+        if descriptor.affectsRender then flags := flags | Render
+        if descriptor.affectsAccessibility then flags := flags | Accessibility
+        node.Invalidate(flags)
+        node.NotifyPropertyChanged(name, oldValue, value)
+        return Ok
+    +mozEnd
+    +mozFunction Validate(node: IUiNode) -> UiValidationResult
+        issues := UiValidationIssueList.Create()
+        for each descriptor in node.GetPropertyDescriptors()
+            value := node.GetProperty(descriptor.name)
+            result := descriptor.validator.Validate(value)
+            issues.AppendAll(result.issues)
+        end
+        return UiValidationResult(issues.Count == 0, issues)
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 07. State, bindings, and update transactions
+# -----------------------------------------------------------------------------
++mozEnum UiUpdateMode
+    Immediate
+    Deferred
+    Transaction
++mozEnd
+
++mozInterface IUiStateStore
+    Get(key: Text) -> UiValue
+    Set(key: Text, value: UiValue) -> UiResult
+    BeginTransaction() -> UiStateTransaction
+    Observe(key: Text, callback: UiStateChanged) -> UiSubscription
++mozEnd
+
++mozService UiStateStore implements IUiStateStore
+    values := Map<Text, UiValue>.Create()
+    observers := Map<Text, UiObserverList>.Create()
+    transactionDepth := 0
+    pending := Map<Text, UiValue>.Create()
+    +mozFunction Set(key: Text, value: UiValue) -> UiResult
+        require key.Length > 0
+        if transactionDepth > 0 then
+            pending[key] := value
+            return Ok
+        end
+        old := values.GetOrDefault(key, UiValue.Null)
+        if old.Equals(value) then return Ok
+        values[key] := value
+        Notify(key, old, value)
+        return Ok
+    +mozEnd
+    +mozFunction BeginTransaction() -> UiStateTransaction
+        transactionDepth := transactionDepth + 1
+        return UiStateTransaction.Create(this, transactionDepth)
+    +mozEnd
+    +mozFunction Commit() -> UiResult
+        require transactionDepth > 0
+        transactionDepth := transactionDepth - 1
+        if transactionDepth == 0 then
+            for each key in pending.Keys()
+                old := values.GetOrDefault(key, UiValue.Null)
+                next := pending[key]
+                values[key] := next
+                if not old.Equals(next) then Notify(key, old, next)
+            end
+            pending.Clear()
+        end
+        return Ok
+    +mozEnd
+    +mozFunction Rollback() -> UiResult
+        require transactionDepth > 0
+        transactionDepth := transactionDepth - 1
+        if transactionDepth == 0 then pending.Clear()
+        return Ok
+    +mozEnd
++mozEnd
+
+# Binding rules: source updates are marshalled onto the UI dispatcher. A binding
+# must never mutate a node from a worker thread. Cycles are detected and reported.
++mozService UiBindingEngine
+    +mozFunction Bind(source: IUiStateStore, key: Text, target: IUiNode, property: Text)
+        subscription := source.Observe(key, (value) =>
+            dispatcher.Post(() => UiPropertyEngine.Set(target, property, value)))
+        target.OnDisposed(() => source.Unobserve(subscription))
+        return subscription
+    +mozEnd
+    +mozFunction BindTwoWay(source: IUiStateStore, key: Text, target: IUiNode, property: Text)
+        Bind(source, key, target, property)
+        target.ObserveProperty(property, (value) => source.Set(key, value))
+        return Ok
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 08. Layout engine: measure, arrange, invalidation
+# -----------------------------------------------------------------------------
++mozFlags UiInvalidation
+    None = 0
+    Measure = 1
+    Arrange = 2
+    Render = 4
+    HitTest = 8
+    Accessibility = 16
+    All = 31
++mozEnd
+
++mozInterface IUiLayout
+    Measure(node: IUiNode, available: UiSize) -> UiSize
+    Arrange(node: IUiNode, finalRect: UiRect) -> UiResult
++mozEnd
+
++mozService UiLayoutEngine
+    +mozFunction Layout(root: IUiNode, viewport: UiSize) -> UiResult
+        require root != null
+        MeasureTree(root, viewport)
+        ArrangeTree(root, UiRect(0, 0, viewport.width, viewport.height))
+        return Ok
+    +mozEnd
+    +mozFunction MeasureTree(node: IUiNode, available: UiSize) -> UiSize
+        if node.visibility == Collapsed then return UiSize.Zero
+        if not node.IsMeasureDirty() then return node.DesiredSize
+        constraints := node.GetMeasureConstraints(available)
+        measured := node.Layout.Measure(node, constraints)
+        measured.width := clamp(measured.width, node.minWidth, node.maxWidth)
+        measured.height := clamp(measured.height, node.minHeight, node.maxHeight)
+        node.SetDesiredSize(measured)
+        node.ClearInvalidation(Measure)
+        return measured
+    +mozEnd
+    +mozFunction ArrangeTree(node: IUiNode, rect: UiRect) -> UiResult
+        if node.visibility == Collapsed then return Ok
+        node.SetLayoutBounds(rect)
+        result := node.Layout.Arrange(node, rect)
+        if result != Ok then return result
+        node.ClearInvalidation(Arrange)
+        return Ok
+    +mozEnd
++mozEnd
+
++mozService StackLayout implements IUiLayout
+    +mozFunction Measure(node: IUiNode, available: UiSize) -> UiSize
+        totalMain := 0
+        maxCross := 0
+        for each child in node.Children where child.visibility != Collapsed
+            childSize := UiLayoutEngine.MeasureTree(child, available)
+            totalMain := totalMain + MainAxis(childSize) + MainMargins(child)
+            maxCross := max(maxCross, CrossAxis(childSize) + CrossMargins(child))
+        end
+        return ComposeAxes(totalMain + node.spacing * max(0, node.ChildCount - 1), maxCross)
+    +mozEnd
+    +mozFunction Arrange(node: IUiNode, rect: UiRect) -> UiResult
+        cursor := MainStart(rect, node.orientation)
+        for each child in node.Children where child.visibility != Collapsed
+            size := ResolveChildSize(child, rect, node.orientation)
+            childRect := ComposeRect(cursor, CrossStart(rect), size, node.orientation)
+            UiLayoutEngine.ArrangeTree(child, childRect)
+            cursor := cursor + MainAxis(size) + node.spacing
+        end
+        return Ok
+    +mozEnd
++mozEnd
+
++mozService GridLayout implements IUiLayout
+    +mozFunction Measure(node: IUiNode, available: UiSize) -> UiSize
+        columns := ResolveTracks(node.columns, available.width, node.columnGap)
+        rows := ResolveTracks(node.rows, available.height, node.rowGap)
+        MeasureChildrenIntoCells(node, columns, rows)
+        return SumTracks(columns, node.columnGap, rows, node.rowGap)
+    +mozEnd
+    +mozFunction Arrange(node: IUiNode, rect: UiRect) -> UiResult
+        columns := ResolveTracks(node.columns, rect.width, node.columnGap)
+        rows := ResolveTracks(node.rows, rect.height, node.rowGap)
+        for each child in node.Children
+            cell := ResolveGridCell(child.gridRow, child.gridColumn, rows, columns)
+            UiLayoutEngine.ArrangeTree(child, cell)
+        end
+        return Ok
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 09. Styling, themes, and visual resources
+# -----------------------------------------------------------------------------
++mozRecord UiColor
+    red: UInt8
+    green: UInt8
+    blue: UInt8
+    alpha: UInt8 = 255
++mozEnd
++mozEnum UiFontWeight
+    Thin = 100
+    Light = 300
+    Normal = 400
+    Medium = 500
+    SemiBold = 600
+    Bold = 700
+    Black = 900
++mozEnd
++mozEnum UiTextAlignment
+    Start
+    Center
+    End
+    Justify
++mozEnd
++mozEnum UiImageFit
+    Fill
+    Contain
+    Cover
+    None
+    ScaleDown
++mozEnd
+
++mozRecord UiStyleRef
+    name: Text
+    scope: Text = "application"
++mozEnd
++mozRecord UiStyle
+    name: Text
+    targetType: Text
+    basedOn: UiStyleRef = None
+    setters: UiSetterList
++mozEnd
++mozRecord UiSetter
+    property: Text
+    value: UiValue
++mozEnd
+
++mozInterface IUiTheme
+    GetName() -> Text
+    GetColor(token: Text) -> UiColor
+    GetMetric(token: Text) -> Float
+    GetFont(token: Text) -> UiFontSpec
+    GetStyle(name: Text) -> UiStyle
++mozEnd
+
++mozService UiThemeManager
+    activeTheme: IUiTheme
+    +mozFunction SetTheme(themeName: Text) -> UiResult
+        nextTheme := UiThemeCatalog.Load(themeName)
+        if nextTheme == null then return NotFound
+        activeTheme := nextTheme
+        for each window in UiHandler.windows
+            window.Root.Invalidate(Render | Measure | Accessibility)
+        end
+        return Ok
+    +mozEnd
+    +mozFunction ResolveColor(token: Text) -> UiColor
+        return activeTheme.GetColor(token)
+    +mozEnd
+    +mozFunction ResolveStyle(name: Text, targetType: Text) -> UiStyle
+        style := activeTheme.GetStyle(name)
+        require style.targetType == targetType or style.targetType == "*"
+        return style
+    +mozEnd
++mozEnd
+
++mozTheme Light
+    color.window := #FFF7F7F9
+    color.surface := #FFFFFFFF
+    color.surfaceAlt := #FFF0F1F4
+    color.text := #FF17181B
+    color.textMuted := #FF686B73
+    color.accent := #FF315ECA
+    color.accentText := #FFFFFFFF
+    color.border := #FFD7D9DF
+    color.focus := #FF245EDB
+    color.danger := #FFB3261E
+    metric.controlHeight := 32
+    metric.cornerRadius := 6
+    metric.spacing := 8
+    metric.fontSize := 14
++mozEnd
++mozTheme Dark
+    color.window := #FF17181B
+    color.surface := #FF222429
+    color.surfaceAlt := #FF2D3037
+    color.text := #FFF1F1F3
+    color.textMuted := #FFB1B4BC
+    color.accent := #FF8BAAFF
+    color.accentText := #FF101B32
+    color.border := #FF41444C
+    color.focus := #FF9BB7FF
+    color.danger := #FFFF8A80
+    metric.controlHeight := 32
+    metric.cornerRadius := 6
+    metric.spacing := 8
+    metric.fontSize := 14
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 10. Rendering and retained frame composition
+# -----------------------------------------------------------------------------
++mozEnum UiRenderLayer
+    Background
+    Content
+    Overlay
+    Adornment
+    Focus
++mozEnd
++mozRecord UiRenderCommand
+    kind: UiRenderCommandKind
+    bounds: UiRect
+    clip: UiRect
+    brush: UiBrush
+    resource: UiResourceRef
+    text: Text
+    transform: UiTransform
+    opacity: Float = 1.0
++mozEnd
++mozRecord UiFrame
+    windowId: Text
+    sequence: UInt64
+    viewport: UiSize
+    dpi: Float
+    commands: UiRenderCommandList
+    dirtyRegions: UiRectList
++mozEnd
+
++mozInterface IUiRenderer
+    BeginFrame(window: UiWindow) -> UiFrame
+    RenderNode(node: IUiNode, frame: UiFrame) -> UiResult
+    EndFrame(frame: UiFrame) -> UiResult
++mozEnd
+
++mozService UiRenderer implements IUiRenderer
+    +mozFunction BeginFrame(window: UiWindow) -> UiFrame
+        frame := UiFrame.Create(window.id, window.NextFrameSequence())
+        frame.viewport := window.ClientSize
+        frame.dpi := window.Dpi
+        frame.dirtyRegions := window.ConsumeDirtyRegions()
+        return frame
+    +mozEnd
+    +mozFunction RenderNode(node: IUiNode, frame: UiFrame) -> UiResult
+        if node.visibility != Visible then return Ok
+        if not IntersectsAny(node.Bounds, frame.dirtyRegions) then return Ok
+        frame.commands.PushClip(node.ClipBounds)
+        node.Render(frame)
+        for each child in node.Children
+            RenderNode(child, frame)
+        end
+        frame.commands.PopClip()
+        return Ok
+    +mozEnd
+    +mozFunction EndFrame(frame: UiFrame) -> UiResult
+        return UiHandler.backend.SubmitFrame(frame.windowId, frame)
+    +mozEnd
++mozEnd
+
++mozService UiRenderScheduler
+    +mozFunction RenderWindow(window: UiWindow) -> UiResult
+        if not window.IsRenderDirty() then return Ok
+        frame := UiRenderer.BeginFrame(window)
+        result := UiRenderer.RenderNode(window.Root, frame)
+        if result != Ok then return result
+        result := UiRenderer.EndFrame(frame)
+        if result == Ok then window.ClearRenderInvalidation()
+        return result
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 11. Input routing, hit testing, and focus
+# -----------------------------------------------------------------------------
++mozEnum UiInputKind
+    PointerMove
+    PointerDown
+    PointerUp
+    PointerCancel
+    Wheel
+    KeyDown
+    KeyUp
+    TextInput
+    ImeStart
+    ImeUpdate
+    ImeCommit
+    TouchStart
+    TouchMove
+    TouchEnd
++mozEnd
++mozEnum UiPointerDevice
+    Mouse
+    Touch
+    Pen
+    Unknown
++mozEnd
++mozRecord UiInputEvent
+    kind: UiInputKind
+    timestamp: UInt64
+    pointerId: UInt32 = 0
+    device: UiPointerDevice = Unknown
+    position: UiPoint = UiPoint.Zero
+    delta: UiPoint = UiPoint.Zero
+    key: UiKey = None
+    modifiers: UiModifiers = None
+    text: Text = ""
+    handled: Bool = false
+    cancelled: Bool = false
++mozEnd
+
++mozInterface IUiInputHandler
+    HandleInput(event: UiInputEvent) -> UiResult
+    HitTest(point: UiPoint) -> IUiNode
+    CapturePointer(pointerId: UInt32, node: IUiNode) -> UiResult
+    ReleasePointer(pointerId: UInt32) -> UiResult
++mozEnd
+
++mozService UiInputRouter implements IUiInputHandler
+    pointerCapture := Map<UInt32, IUiNode>.Create()
+    +mozFunction HandleInput(event: UiInputEvent) -> UiResult
+        target := pointerCapture.GetOrNull(event.pointerId)
+        if target == null then target := HitTest(event.position)
+        if target == null then return Ok
+        RouteCapture(event, target)
+        if not event.handled and not event.cancelled then RouteTarget(event, target)
+        if not event.handled and not event.cancelled then RouteBubble(event, target)
+        if event.kind == PointerUp or event.kind == PointerCancel then
+            ReleasePointer(event.pointerId)
+        end
+        return Ok
+    +mozEnd
+    +mozFunction HitTest(point: UiPoint) -> IUiNode
+        return HitTestNode(UiHandler.ActiveWindow.Root, point)
+    +mozEnd
+    +mozFunction HitTestNode(node: IUiNode, point: UiPoint) -> IUiNode
+        if node.visibility != Visible or not node.enabled then return null
+        if not RectContains(node.Bounds, point) then return null
+        for each child in node.Children.Reverse()
+            found := HitTestNode(child, point)
+            if found != null then return found
+        end
+        if node.IsHitTestVisible then return node
+        return null
+    +mozEnd
+    +mozFunction CapturePointer(pointerId: UInt32, node: IUiNode) -> UiResult
+        if pointerCapture.Contains(pointerId) then return AlreadyExists
+        pointerCapture[pointerId] := node
+        return Ok
+    +mozEnd
+    +mozFunction ReleasePointer(pointerId: UInt32) -> UiResult
+        pointerCapture.Remove(pointerId)
+        return Ok
+    +mozEnd
++mozEnd
+
++mozService UiFocusManager
+    focusedNode: IUiNode = null
+    +mozFunction Focus(node: IUiNode) -> UiResult
+        if node == null or not node.IsFocusable or not node.IsEffectivelyEnabled then return InvalidArgument
+        previous := focusedNode
+        if previous == node then return Ok
+        if previous != null then previous.RaiseEvent(LostFocus)
+        focusedNode := node
+        node.RaiseEvent(GotFocus)
+        node.Invalidate(Render | Accessibility)
+        return Ok
+    +mozEnd
+    +mozFunction MoveNext(reverse: Bool = false) -> UiResult
+        candidates := UiHandler.ActiveWindow.Root.GetFocusableNodesInTabOrder()
+        next := candidates.NextAfter(focusedNode, reverse)
+        if next == null then return Ok
+        return Focus(next)
+    +mozEnd
+    +mozFunction Clear() -> UiResult
+        if focusedNode != null then focusedNode.RaiseEvent(LostFocus)
+        focusedNode := null
+        return Ok
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 12. Event declarations and command routing
+# -----------------------------------------------------------------------------
++mozEnum UiEventPhase
+    Capture
+    Target
+    Bubble
++mozEnd
++mozRecord UiRoutedEvent
+    name: Text
+    source: IUiNode
+    target: IUiNode
+    phase: UiEventPhase
+    handled: Bool = false
+    cancelled: Bool = false
+    payload: UiValue = Null
++mozEnd
++mozInterface IUiCommand
+    CanExecute(parameter: UiValue) -> Bool
+    Execute(parameter: UiValue) -> UiResult
++mozEnd
+
++mozService UiEventManager
+    +mozFunction Raise(target: IUiNode, eventName: Text, payload: UiValue = Null) -> UiResult
+        require target != null
+        route := BuildAncestorRoute(target)
+        event := UiRoutedEvent(eventName, target, target, Capture, false, false, payload)
+        for each node in route.RootToParent
+            node.InvokeHandlers(event, Capture)
+            if event.handled or event.cancelled then return Ok
+        end
+        event.phase := Target
+        target.InvokeHandlers(event, Target)
+        if event.handled or event.cancelled then return Ok
+        event.phase := Bubble
+        for each node in route.ParentToRoot
+            node.InvokeHandlers(event, Bubble)
+            if event.handled or event.cancelled then break
+        end
+        return Ok
+    +mozEnd
++mozEnd
+
++mozService UiCommandManager
+    +mozFunction Execute(command: IUiCommand, parameter: UiValue) -> UiResult
+        if command == null then return InvalidArgument
+        if not command.CanExecute(parameter) then return EventRejected
+        return command.Execute(parameter)
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 13. Window manager and native lifetime
+# -----------------------------------------------------------------------------
++mozEnum UiWindowState
+    Normal
+    Minimized
+    Maximized
+    Fullscreen
++mozEnd
++mozRecord WindowSpec
+    id: Text
+    title: Text = "Mouz Window"
+    bounds: UiRect = UiRect(100, 100, 960, 640)
+    minimumSize: UiSize = UiSize(320, 240)
+    maximumSize: UiSize = UiSize.Infinite
+    resizable: Bool = true
+    owner: UiWindow = null
+    startupLocation: UiStartupLocation = CenterOwner
+    style: UiWindowStyle = Standard
+    root: IUiNode = null
++mozEnd
+
++mozService UiWindow
+    id: Text
+    nativeHandle: NativeWindowHandle
+    Root: IUiNode
+    state: UiWindowState = Normal
+    Dpi: Float = 96
+    ClientSize: UiSize
+    +mozFunction Show() -> UiResult
+        require nativeHandle != null
+        return backend.ShowWindow(nativeHandle)
+    +mozEnd
+    +mozFunction Close() -> UiResult
+        if EventManager.Raise(Root, "closing") == EventRejected then return EventRejected
+        backend.DestroyNativeWindow(nativeHandle)
+        Root.Dispose()
+        state := Disposed
+        return Ok
+    +mozEnd
+    +mozFunction LayoutIfDirty() -> UiResult
+        if not Root.IsMeasureDirty() and not Root.IsArrangeDirty() then return Ok
+        return UiLayoutEngine.Layout(Root, ClientSize)
+    +mozEnd
+    +mozFunction RenderIfDirty() -> UiResult
+        return UiRenderScheduler.RenderWindow(this)
+    +mozEnd
+    +mozFunction CommitPendingChanges() -> UiResult
+        return UiPropertyTransaction.CommitFor(this)
+    +mozEnd
++mozEnd
+
++mozService UiWindowRegistry
+    entries := Map<Text, UiWindow>.Create()
+    +mozFunction Add(window: UiWindow) -> UiResult
+        if entries.Contains(window.id) then return AlreadyExists
+        entries[window.id] := window
+        return Ok
+    +mozEnd
+    +mozFunction Remove(id: Text) -> UiResult
+        if not entries.Contains(id) then return NotFound
+        entries.Remove(id)
+        return Ok
+    +mozEnd
+    +mozFunction Get(id: Text) -> UiWindow
+        return entries.GetOrNull(id)
+    +mozEnd
+    +mozFunction All() -> UiWindowList
+        return entries.Values().ToList()
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 14. Accessibility tree and semantics
+# -----------------------------------------------------------------------------
++mozEnum UiAccessibilityRole
+    None
+    Window
+    Group
+    Button
+    Text
+    TextField
+    CheckBox
+    RadioButton
+    Slider
+    ProgressBar
+    Image
+    List
+    ListItem
+    Menu
+    MenuItem
+    Tab
+    TabPanel
+    ScrollArea
++mozEnd
++mozRecord UiAccessibilitySpec
+    role: UiAccessibilityRole = None
+    label: Text = ""
+    description: Text = ""
+    hint: Text = ""
+    isHidden: Bool = false
+    isLiveRegion: Bool = false
+    livePoliteness: UiLivePoliteness = Off
+    valueText: Text = ""
+    positionInSet: Int32 = 0
+    setSize: Int32 = 0
++mozEnd
+
++mozInterface IUiAccessibilityProvider
+    BuildAccessibilityNode(node: IUiNode) -> UiAccessibilityNode
+    NotifyAccessibilityChanged(node: IUiNode, property: Text) -> UiResult
++mozEnd
+
++mozService UiAccessibility
+    +mozFunction BuildAccessibilityNode(node: IUiNode) -> UiAccessibilityNode
+        if node.accessibility.isHidden then return null
+        result := UiAccessibilityNode.Create()
+        result.role := node.accessibility.role
+        result.name := ResolveAccessibleName(node)
+        result.description := node.accessibility.description
+        result.value := ResolveAccessibleValue(node)
+        for each child in node.Children
+            childNode := BuildAccessibilityNode(child)
+            if childNode != null then result.children.Append(childNode)
+        end
+        return result
+    +mozEnd
+    +mozFunction NotifyAccessibilityChanged(node: IUiNode, property: Text) -> UiResult
+        backend.AccessibilityBridge.Notify(node.id, property)
+        return Ok
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 15. Resource loading and caching
+# -----------------------------------------------------------------------------
++mozEnum UiResourceKind
+    Image
+    Font
+    Icon
+    Template
+    Style
+    Data
++mozEnd
++mozRecord UiResourceRef
+    uri: Text
+    kind: UiResourceKind
+    scale: Float = 1.0
++mozEnd
+
++mozInterface IUiResourceLoader
+    Load(reference: UiResourceRef) -> UiResource
+    LoadAsync(reference: UiResourceRef, callback: UiResourceCallback) -> UiRequest
+    Cancel(request: UiRequest) -> UiResult
++mozEnd
+
++mozService UiResourceStore
+    cache := Map<Text, UiResource>.Create()
+    requests := Map<UInt64, UiRequest>.Create()
+    +mozFunction Load(reference: UiResourceRef) -> UiResource
+        key := NormalizeResourceUri(reference.uri)
+        if cache.Contains(key) then return cache[key]
+        resource := ResourceLoader.Load(reference)
+        if resource == null then fail ResourceMissing(reference.uri)
+        cache[key] := resource
+        return resource
+    +mozEnd
+    +mozFunction Invalidate(uri: Text) -> UiResult
+        cache.Remove(NormalizeResourceUri(uri))
+        return Ok
+    +mozEnd
+    +mozFunction Clear() -> UiResult
+        for each resource in cache.Values()
+            resource.Release()
+        end
+        cache.Clear()
+        return Ok
+    +mozEnd
++mozEnd
+
+# Resource security: resolve paths beneath resourceRoot; reject traversal, unsupported
+# schemes, oversized decoded images, and untrusted executable templates.
++mozService UiResourcePolicy
+    allowedSchemes := ["asset", "file", "https", "data"]
+    maxImageBytes := 33554432
+    maxImageDimension := 16384
+    +mozFunction Validate(reference: UiResourceRef) -> UiResult
+        if not allowedSchemes.Contains(reference.uri.Scheme) then return Unsupported
+        if reference.uri.ContainsPathTraversal then return InvalidArgument
+        return Ok
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 16. Text shaping, input method, and clipboard
+# -----------------------------------------------------------------------------
++mozRecord UiFontSpec
+    family: Text = "system-ui"
+    size: Float = 14
+    weight: UiFontWeight = Normal
+    italic: Bool = false
+    stretch: Float = 1
++mozEnd
++mozInterface IUiTextService
+    Measure(text: Text, font: UiFontSpec, width: Float) -> UiSize
+    Draw(text: Text, font: UiFontSpec, bounds: UiRect, brush: UiBrush) -> UiResult
+    CaretAt(text: Text, font: UiFontSpec, point: UiPoint) -> Int32
++mozEnd
+
++mozService UiTextInputService
+    +mozFunction InsertText(target: IUiNode, value: Text) -> UiResult
+        require target.IsTextEditable
+        next := target.TextBeforeSelection + value + target.TextAfterSelection
+        target.SetProperty("text", next)
+        target.SetSelection(target.SelectionStart + value.Length, 0)
+        return Ok
+    +mozEnd
+    +mozFunction DeleteBackward(target: IUiNode) -> UiResult
+        if target.SelectionLength > 0 then return target.DeleteSelection()
+        if target.SelectionStart == 0 then return Ok
+        target.DeleteRange(target.SelectionStart - 1, 1)
+        return Ok
+    +mozEnd
+    +mozFunction CommitIme(target: IUiNode, value: Text) -> UiResult
+        return InsertText(target, value)
+    +mozEnd
++mozEnd
+
++mozService UiClipboard
+    +mozFunction Copy(value: Text) -> UiResult
+        return backend.SetClipboardText(value)
+    +mozEnd
+    +mozFunction Paste() -> Text
+        return backend.GetClipboardText()
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 17. Commands, dialogs, and common interaction services
+# -----------------------------------------------------------------------------
++mozEnum UiDialogResult
+    None
+    Accepted
+    Cancelled
+    Yes
+    No
+    Retry
++mozEnd
++mozRecord UiDialogOptions
+    title: Text
+    message: Text
+    detail: Text = ""
+    buttons: UiDialogButtonSet = Ok
+    icon: UiDialogIcon = Information
+    owner: UiWindow = null
++mozEnd
+
++mozInterface IUiDialogService
+    ShowMessage(options: UiDialogOptions) -> UiDialogResult
+    ShowOpenFile(options: UiFileDialogOptions) -> UiFileDialogResult
+    ShowSaveFile(options: UiFileDialogOptions) -> UiFileDialogResult
++mozEnd
+
++mozService UiDialogService implements IUiDialogService
+    +mozFunction ShowMessage(options: UiDialogOptions) -> UiDialogResult
+        require options.title.Length > 0
+        return backend.ShowMessageDialog(options)
+    +mozEnd
+    +mozFunction ShowOpenFile(options: UiFileDialogOptions) -> UiFileDialogResult
+        return backend.ShowFileDialog(options, Open)
+    +mozEnd
+    +mozFunction ShowSaveFile(options: UiFileDialogOptions) -> UiFileDialogResult
+        return backend.ShowFileDialog(options, Save)
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 18. Animation and transitions
+# -----------------------------------------------------------------------------
++mozEnum UiEasing
+    Linear
+    EaseIn
+    EaseOut
+    EaseInOut
+    CubicBezier
++mozEnd
++mozRecord UiTransition
+    property: Text
+    from: UiValue
+    to: UiValue
+    durationMs: UInt32 = 180
+    delayMs: UInt32 = 0
+    easing: UiEasing = EaseOut
+    essential: Bool = false
++mozEnd
+
++mozService UiAnimationClock
+    active: UiTransitionList
+    +mozFunction Start(target: IUiNode, transition: UiTransition) -> UiResult
+        if Platform.ReduceMotionEnabled() and not transition.essential then
+            target.SetProperty(transition.property, transition.to)
+            return Ok
+        end
+        active.Add(UiRunningTransition.Create(target, transition, Clock.Now()))
+        return Ok
+    +mozEnd
+    +mozFunction Tick(now: UInt64) -> UiResult
+        for each animation in active snapshot
+            progress := animation.ProgressAt(now)
+            value := Interpolate(animation.from, animation.to, animation.easing.Apply(progress))
+            UiPropertyEngine.Set(animation.target, animation.property, value)
+            if progress >= 1 then active.Remove(animation)
+        end
+        return Ok
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 19. Diagnostics, logging, and error boundaries
+# -----------------------------------------------------------------------------
++mozEnum DiagnosticSeverity
+    Trace
+    Info
+    Warning
+    Error
+    Fatal
++mozEnd
++mozRecord UiDiagnostic
+    code: Text
+    severity: DiagnosticSeverity
+    message: Text
+    componentId: Text = ""
+    propertyName: Text = ""
+    timestamp: UInt64
++mozEnd
+
++mozService UiDiagnostics
+    entries := UiDiagnosticList.Create()
+    +mozFunction Report(code: Text, severity: DiagnosticSeverity, message: Text, node: IUiNode = null)
+        entry := UiDiagnostic(code, severity, message, node?.id ?? "", "", Clock.Now())
+        entries.Append(entry)
+        if severity >= Error then Log.Error("Mouz.UI", entry.ToText())
+        return entry
+    +mozEnd
+    +mozFunction Clear() -> UiResult
+        entries.Clear()
+        return Ok
+    +mozEnd
+    +mozFunction Snapshot() -> UiDiagnosticList
+        return entries.Clone()
+    +mozEnd
++mozEnd
+
++mozService UiErrorBoundary
+    +mozFunction Invoke(node: IUiNode, callback: UiCallback) -> UiResult
+        try
+            callback.Invoke()
+            return Ok
+        catch error
+            UiDiagnostics.Report("UI_CALLBACK_FAILED", Error, error.Message, node)
+            node.MarkFaulted(error)
+            return InternalError
+        end
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 20. Threading, dispatcher, and safe mutation
+# -----------------------------------------------------------------------------
++mozInterface IUiDispatcher
+    CheckAccess() -> Bool
+    Post(callback: UiCallback) -> UiRequest
+    Send(callback: UiCallback) -> UiResult
+    Drain() -> UiResult
++mozEnd
+
++mozService UiDispatcher implements IUiDispatcher
+    ownerThread := Thread.CurrentId
+    queue := ConcurrentQueue<UiCallback>.Create()
+    +mozFunction CheckAccess() -> Bool
+        return Thread.CurrentId == ownerThread
+    +mozEnd
+    +mozFunction Post(callback: UiCallback) -> UiRequest
+        require callback != null
+        request := UiRequest.Create()
+        queue.Enqueue(() => request.Complete(callback.Invoke()))
+        backend.WakeUiThread()
+        return request
+    +mozEnd
+    +mozFunction Send(callback: UiCallback) -> UiResult
+        if CheckAccess() then return callback.Invoke()
+        request := Post(callback)
+        return request.Wait()
+    +mozEnd
+    +mozFunction Drain() -> UiResult
+        require CheckAccess()
+        while queue.TryDequeue(callback)
+            UiErrorBoundary.Invoke(null, callback)
+        end
+        return Ok
+    +mozEnd
++mozEnd
+
+# All tree mutation and visual property writes are UI-thread operations. Worker code
+# may prepare immutable data and post a callback, but may not touch IUiNode directly.
++mozFunction VerifyUiThread() -> UiResult
+    if not UiHandler.dispatcher.CheckAccess() then
+        UiDiagnostics.Report("UI_THREAD_VIOLATION", Error, "UI mutation from non-UI thread")
+        return InvalidState
+    end
+    return Ok
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 21. Templates, composition, and declarative construction
+# -----------------------------------------------------------------------------
++mozInterface IUiTemplate
+    GetName() -> Text
+    Instantiate(data: UiValue) -> IUiNode
+    Validate() -> UiValidationResult
++mozEnd
+
++mozService UiTemplateRegistry
+    templates := Map<Text, IUiTemplate>.Create()
+    +mozFunction Register(template: IUiTemplate) -> UiResult
+        if templates.Contains(template.GetName()) then return AlreadyExists
+        validation := template.Validate()
+        if not validation.isValid then return InvalidArgument
+        templates[template.GetName()] := template
+        return Ok
+    +mozEnd
+    +mozFunction Instantiate(name: Text, data: UiValue) -> IUiNode
+        template := templates.GetOrNull(name)
+        if template == null then fail NotFound(name)
+        return template.Instantiate(data)
+    +mozEnd
++mozEnd
+
+# The .mozf component declaration calls into this factory. The handler owns creation,
+# validation, parent-child attachment, property initialization, and lifecycle hooks.
++mozFunction BuildComponent(spec: UiComponentSpec, parent: IUiNode = null) -> IUiNode
+    VerifyUiThread()
+    node := UiComponentRegistry.Create(spec)
+    if node == null then fail InternalError
+    result := UiPropertyEngine.ApplyInitialValues(node, spec)
+    if result != Ok then
+        node.Dispose()
+        fail InvalidArgument
+    end
+    if parent != null then
+        result := parent.AddChild(node)
+        if result != Ok then
+            node.Dispose()
+            fail result
+        end
+    end
+    node.OnCreated()
+    return node
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 22. Window creation entry points
+# -----------------------------------------------------------------------------
++mozFunction CreateWindow(spec: WindowSpec) -> UiWindow
+    require UiHandler.state == Ready
+    require spec.id.Length > 0
+    if UiHandler.windows.Get(spec.id) != null then fail AlreadyExists
+    root := spec.root ?? UiComponentRegistry.Create(UiComponentSpec(type="Panel", id=spec.id + ".root"))
+    handle := UiHandler.backend.CreateNativeWindow(spec)
+    if handle == null then fail InternalError
+    window := UiWindow.Create(spec, handle, root)
+    UiHandler.windows.Add(window)
+    root.AttachToTree(window)
+    window.LayoutIfDirty()
+    window.RenderIfDirty()
+    return window
++mozEnd
+
++mozFunction DestroyWindow(window: UiWindow) -> UiResult
+    require window != null
+    result := window.Close()
+    UiHandler.windows.Remove(window.id)
+    return result
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 23. Frame pump and application integration
+# -----------------------------------------------------------------------------
++mozFunction PumpEvents(timeoutMs: UInt32 = 0) -> UiResult
+    require UiHandler.state == Ready
+    VerifyUiThread()
+    UiHandler.backend.PumpNativeEvents(timeoutMs, (event) => UiInputRouter.HandleInput(event))
+    UiDispatcher.Drain()
+    UiAnimationClock.Tick(Clock.Now())
+    for each window in UiHandler.windows.All()
+        window.CommitPendingChanges()
+        window.LayoutIfDirty()
+        window.RenderIfDirty()
+    end
+    return Ok
++mozEnd
+
++mozFunction RunUiLoop() -> UiResult
+    require UiHandler.state == Ready
+    while UiHandler.state == Ready and UiHandler.windows.Count > 0
+        PumpEvents(16)
+    end
+    return Ok
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 24. Public helper API exposed to .mozf source
+# -----------------------------------------------------------------------------
++mozPublic Ui
+    CreateWindow(spec: WindowSpec) -> UiWindow
+    Create(spec: UiComponentSpec, parent: IUiNode = null) -> IUiNode
+    Find(root: IUiNode, id: Text) -> IUiNode
+    Set(node: IUiNode, property: Text, value: UiValue) -> UiResult
+    Bind(store: IUiStateStore, key: Text, node: IUiNode, property: Text) -> UiSubscription
+    On(node: IUiNode, eventName: Text, callback: UiEventCallback) -> UiSubscription
+    Focus(node: IUiNode) -> UiResult
+    ShowDialog(options: UiDialogOptions) -> UiDialogResult
+    SetTheme(name: Text) -> UiResult
+    Flush() -> UiResult
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 25. Default component property metadata
+# -----------------------------------------------------------------------------
++mozProperties Button
+    text: Text = "" affectsMeasure,Render,Accessibility
+    enabled: Bool = true affectsRender,HitTest,Accessibility
+    isDefault: Bool = false affectsRender,Accessibility
+    isCancel: Bool = false affectsAccessibility
+    command: Object = null
+    commandParameter: Object = null
+    background: Brush = Theme("color.surface") affectsRender
+    foreground: Brush = Theme("color.text") affectsRender
+    borderBrush: Brush = Theme("color.border") affectsRender
+    cornerRadius: Number = Theme("metric.cornerRadius") affectsRender
+    padding: Thickness = 12,6 affectsMeasure,Arrange,Render
+    fontSize: Number = Theme("metric.fontSize") affectsMeasure,Render
+    fontWeight: Enum = SemiBold affectsMeasure,Render
++mozEnd
+
++mozProperties TextBlock
+    text: Text = "" affectsMeasure,Render,Accessibility
+    fontFamily: Text = "system-ui" affectsMeasure,Render
+    fontSize: Number = 14 affectsMeasure,Render
+    fontWeight: Enum = Normal affectsMeasure,Render
+    foreground: Brush = Theme("color.text") affectsRender
+    textAlignment: Enum = Start affectsRender
+    wrapping: Bool = true affectsMeasure,Render
+    trimming: Enum = None affectsRender
+    selectable: Bool = false affectsHitTest
++mozEnd
+
++mozProperties TextInput
+    text: Text = "" affectsMeasure,Render,Accessibility
+    placeholder: Text = "" affectsRender,Accessibility
+    maxLength: Integer = 0
+    readOnly: Bool = false affectsRender,Accessibility
+    password: Bool = false affectsRender,Accessibility
+    multiline: Bool = false affectsMeasure,Arrange,Render
+    acceptReturn: Bool = false
+    inputType: Enum = Text
+    selectionStart: Integer = 0 affectsRender
+    selectionLength: Integer = 0 affectsRender
+    caretBrush: Brush = Theme("color.accent") affectsRender
+    selectionBrush: Brush = Theme("color.accent") affectsRender
++mozEnd
+
++mozProperties Slider
+    minimum: Number = 0
+    maximum: Number = 100
+    value: Number = 0 affectsRender,Accessibility
+    step: Number = 1
+    orientation: Enum = Horizontal affectsMeasure,Arrange,Render
+    tickFrequency: Number = 0 affectsRender
+    isSnapToTickEnabled: Bool = false
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 26. Default event and keyboard behavior
+# -----------------------------------------------------------------------------
++mozBehavior Button
+    on PointerDown:
+        if not enabled then reject
+        FocusManager.Focus(this)
+        InputRouter.CapturePointer(event.pointerId, this)
+        pressed := true
+        Invalidate(Render)
+        mark event handled
+    on PointerUp:
+        wasPressed := pressed
+        pressed := false
+        InputRouter.ReleasePointer(event.pointerId)
+        Invalidate(Render)
+        if wasPressed and HitTest(event.position) == this then RaiseEvent("click")
+        mark event handled
+    on KeyDown Enter or Space:
+        pressed := true
+        Invalidate(Render)
+        mark event handled
+    on KeyUp Enter or Space:
+        if pressed then RaiseEvent("click")
+        pressed := false
+        Invalidate(Render)
+        mark event handled
++mozEnd
+
++mozBehavior TextInput
+    on TextInput:
+        if not readOnly then TextInputService.InsertText(this, event.text)
+        mark event handled
+    on KeyDown Backspace:
+        if not readOnly then TextInputService.DeleteBackward(this)
+        mark event handled
+    on KeyDown Ctrl+A:
+        SetSelection(0, text.Length)
+        mark event handled
+    on KeyDown Ctrl+C:
+        Clipboard.Copy(SelectedText)
+        mark event handled
+    on KeyDown Ctrl+V:
+        if not readOnly then TextInputService.InsertText(this, Clipboard.Paste())
+        mark event handled
+    on KeyDown Enter:
+        if not multiline or not acceptReturn then RaiseEvent("submitted")
+        mark event handled
++mozEnd
+
++mozBehavior Slider
+    on PointerDown:
+        FocusManager.Focus(this)
+        InputRouter.CapturePointer(event.pointerId, this)
+        UpdateValueFromPoint(event.position)
+        RaiseEvent("dragStarted")
+        mark event handled
+    on PointerMove when pointerCaptured:
+        UpdateValueFromPoint(event.position)
+        mark event handled
+    on PointerUp:
+        InputRouter.ReleasePointer(event.pointerId)
+        RaiseEvent("dragCompleted")
+        mark event handled
+    on KeyDown Left or Down:
+        SetValue(value - step)
+        mark event handled
+    on KeyDown Right or Up:
+        SetValue(value + step)
+        mark event handled
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 27. Layout defaults for built-in containers
+# -----------------------------------------------------------------------------
++mozLayout Stack
+    Measure := StackLayout.Measure
+    Arrange := StackLayout.Arrange
+    defaultOrientation := Vertical
+    defaultSpacing := 0
+    childrenParticipateWhen := visibility == Visible or visibility == Hidden
+    collapsedChildrenConsumeSpace := false
++mozEnd
+
++mozLayout Grid
+    Measure := GridLayout.Measure
+    Arrange := GridLayout.Arrange
+    defaultRows := [Star(1)]
+    defaultColumns := [Star(1)]
+    defaultRowGap := 0
+    defaultColumnGap := 0
+    collapsedChildrenConsumeSpace := false
++mozEnd
+
++mozLayout Border
+    Measure := BorderLayout.Measure
+    Arrange := BorderLayout.Arrange
+    childCount := 1
+    paddingConsumesSpace := true
+    borderConsumesSpace := true
++mozEnd
+
++mozLayout ScrollView
+    Measure := ScrollLayout.Measure
+    Arrange := ScrollLayout.Arrange
+    defaultOverflow := Auto
+    preserveScrollOffsetOnResize := true
+    clampScrollOffsetToContent := true
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 28. Resource and theme defaults
+# -----------------------------------------------------------------------------
++mozResourcePolicy Default
+    maxResourceCount := 4096
+    maxImageBytes := 33554432
+    maxFontBytes := 16777216
+    allowRemoteResources := false
+    allowDataUris := true
+    cacheDecodedImages := true
+    cacheFonts := true
+    releaseUnusedAfterFrames := 120
++mozEnd
+
++mozThemeTokens Common
+    color.window
+    color.surface
+    color.surfaceAlt
+    color.text
+    color.textMuted
+    color.accent
+    color.accentText
+    color.border
+    color.focus
+    color.danger
+    metric.controlHeight
+    metric.cornerRadius
+    metric.spacing
+    metric.fontSize
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 29. Runtime invariants
+# -----------------------------------------------------------------------------
++mozInvariant UI001
+    every attached node has exactly one parent
+    root nodes have no parent
+    a node cannot be its own ancestor
++mozEnd
++mozInvariant UI002
+    disposed nodes cannot be attached, rendered, or receive input
++mozEnd
++mozInvariant UI003
+    all visual tree mutations occur on the UI thread
++mozEnd
++mozInvariant UI004
+    layout runs before rendering after measure or arrange invalidation
++mozEnd
++mozInvariant UI005
+    hidden nodes retain layout space but do not render or receive hit tests
+    collapsed nodes do not retain layout space
++mozEnd
++mozInvariant UI006
+    pointer capture is released on pointer up, cancel, and node disposal
++mozEnd
++mozInvariant UI007
+    event routing order is capture, target, then bubble
++mozEnd
++mozInvariant UI008
+    failed component construction disposes the partially created node
++mozEnd
++mozInvariant UI009
+    resource paths are validated before loading
++mozEnd
++mozInvariant UI010
+    every public operation returns a UiResult or raises a typed Mouz diagnostic
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 30. Test hooks and deterministic headless mode
+# -----------------------------------------------------------------------------
++mozService UiTestHooks
+    enabled := false
+    +mozFunction Enable() -> UiResult
+        require Platform.IsDebugBuild()
+        enabled := true
+        return Ok
+    +mozEnd
+    +mozFunction CreateHeadlessWindow(size: UiSize) -> UiWindow
+        require enabled
+        UiHandlerOptions.backend := Headless
+        return CreateWindow(WindowSpec(id=UniqueId(), bounds=UiRect(0, 0, size.width, size.height)))
+    +mozEnd
+    +mozFunction SnapshotTree(root: IUiNode) -> Text
+        require enabled
+        return UiTreeSerializer.Serialize(root, includeLayout=true, includeProperties=true)
+    +mozEnd
+    +mozFunction AssertLayout(node: IUiNode, expected: UiRect) -> UiResult
+        require enabled
+        if not node.Bounds.NearlyEquals(expected, 0.5) then return InvalidState
+        return Ok
+    +mozEnd
++mozEnd
+
++mozTest "handler initializes exactly once"
+    assert UiHandler.Initialize(UiHandlerOptions(backend=Headless)) == Ok
+    assert UiHandler.GetState() == Ready
+    assert UiHandler.Initialize(UiHandlerOptions(backend=Headless)) == InvalidState
+    assert UiHandler.Shutdown() == Ok
++mozEnd
+
++mozTest "component tree rejects cycles"
+    root := BuildComponent(UiComponentSpec(id="root", type="Panel"))
+    child := BuildComponent(UiComponentSpec(id="child", type="Button"), root)
+    assert root.AddChild(child) == AlreadyExists
+    assert child.AddChild(root) == InvalidArgument
+    root.Dispose()
++mozEnd
+
++mozTest "property changes invalidate rendering"
+    button := BuildComponent(UiComponentSpec(id="save", type="Button"))
+    assert button.SetProperty("text", "Save") == Ok
+    assert button.IsRenderDirty()
+    button.Dispose()
++mozEnd
+
++mozTest "headless layout is deterministic"
+    root := BuildComponent(UiComponentSpec(id="root", type="Stack"))
+    root.AddChild(BuildComponent(UiComponentSpec(id="a", type="TextBlock")))
+    root.AddChild(BuildComponent(UiComponentSpec(id="b", type="Button")))
+    assert UiLayoutEngine.Layout(root, UiSize(400, 300)) == Ok
+    assert root.Bounds == UiRect(0, 0, 400, 300)
+    root.Dispose()
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 31. Extension points for future controls and platform services
+# -----------------------------------------------------------------------------
++mozInterface IUiControlExtension
+    RegisterComponents(registry: UiComponentRegistry) -> UiResult
+    RegisterThemes(catalog: UiThemeCatalog) -> UiResult
+    RegisterResources(store: UiResourceStore) -> UiResult
+    Shutdown() -> UiResult
++mozEnd
+
++mozInterface IUiPlatformService
+    GetPlatformName() -> Text
+    GetCapabilities() -> UiCapabilities
+    OpenExternal(uri: Text) -> UiResult
+    GetSystemMetric(name: Text) -> Float
+    GetSystemColor(name: Text) -> UiColor
++mozEnd
+
++mozService UiExtensionManager
+    extensions := UiExtensionList.Create()
+    +mozFunction Register(extension: IUiControlExtension) -> UiResult
+        require extension != null
+        result := extension.RegisterComponents(UiComponentRegistry)
+        if result != Ok then return result
+        result := extension.RegisterThemes(UiThemeCatalog)
+        if result != Ok then return result
+        result := extension.RegisterResources(UiResourceStore)
+        if result != Ok then return result
+        extensions.Append(extension)
+        return Ok
+    +mozEnd
+    +mozFunction Shutdown() -> UiResult
+        for each extension in extensions.Reverse()
+            extension.Shutdown()
+        end
+        extensions.Clear()
+        return Ok
+    +mozEnd
++mozEnd
+
+# -----------------------------------------------------------------------------
+# 32. Initialization wiring
+# -----------------------------------------------------------------------------
++mozFunction RegisterBuiltInComponents() -> UiResult
+    UiComponentRegistry.Register(ButtonFactory.Create())
+    UiComponentRegistry.Register(TextBlockFactory.Create())
+    UiComponentRegistry.Register(TextInputFactory.Create())
+    UiComponentRegistry.Register(ImageFactory.Create())
+    UiComponentRegistry.Register(PanelFactory.Create())
+    UiComponentRegistry.Register(StackFactory.Create())
+    UiComponentRegistry.Register(GridFactory.Create())
+    UiComponentRegistry.Register(ScrollViewFactory.Create())
+    UiComponentRegistry.Register(CheckBoxFactory.Create())
+    UiComponentRegistry.Register(RadioButtonFactory.Create())
+    UiComponentRegistry.Register(SliderFactory.Create())
+    UiComponentRegistry.Register(ProgressBarFactory.Create())
+    UiComponentRegistry.Register(BorderFactory.Create())
+    UiComponentRegistry.Register(SeparatorFactory.Create())
+    UiComponentRegistry.Register(ListViewFactory.Create())
+    UiComponentRegistry.Register(WindowFactory.Create())
+    return Ok
++mozEnd
+
++mozFunction InitializeUiHandler(options: UiHandlerOptions) -> UiResult
+    result := UiHandler.Initialize(options)
+    if result != Ok then return result
+    result := RegisterBuiltInComponents()
+    if result != Ok then
+        UiHandler.Shutdown()
+        return result
+    end
+    UiHandler.themes.SetTheme(options.themeName)
+    return Ok
++mozEnd
+
+# End of Mouz UI Handler Core draft.
+# This file defines the handler surface and behavior contract; native and browser
+# bridge implementations must satisfy these interfaces in the Mouz runtime.
