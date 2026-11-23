@@ -29,7 +29,19 @@ change clicks := clicks + 1
 The language supports immutable values, mutable state, source-ordered updates, typed constant expressions, arithmetic, string concatenation, comparisons, equality, logical operators, and parentheses. See [the grammar](docs/GRAMMAR.md), [vocabulary](docs/VOCABULARY.md), and [expression reference](docs/EXPRESSIONS_AND_VOCABULARY.md).
 
 ## Build
-Requirements: CMake 3.22+, a C11 compiler, and a C++20 compiler.
+Requirements: GNU Make, CMake 3.22+, a C11 compiler, and a C++20 compiler.
+
+The root `Makefile` provides convenient cross-platform build targets while CMake remains the underlying build system:
+
+```sh
+make                 # configure and build Mouz + Mouzi
+make test            # build and run the CTest regression suite
+make clean           # remove the build directory
+make rebuild         # clean and rebuild
+make BUILD_TYPE=Debug # build a Debug configuration
+```
+
+You can also invoke CMake directly:
 
 ```sh
 cmake -S . -B build
